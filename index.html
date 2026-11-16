@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>波の観測(3秒計測)</title>
+<style>
+:root{--ink:#1d2433;--sub:#5b6577;--line:#d5dae3;--blue:#0b5fff;--warn:#8a4b00}
+*{box-sizing:border-box}
+body{margin:0;padding:12px;font-family:system-ui,"Hiragino Sans","Noto Sans JP",Meiryo,sans-serif;color:var(--ink);background:#fff;line-height:1.5}
+h1{font-size:1.25rem;margin:0 0 4px}
+.steps{margin:0 0 10px;color:var(--sub);font-size:.92rem}
+.bar{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin:0 0 8px}
+button{font:inherit;cursor:pointer;border:0;border-radius:8px;padding:12px 22px;min-height:48px;background:var(--blue);color:#fff;font-weight:700}
+button:disabled{opacity:.5;cursor:default}
+button.sub{background:#fff;color:var(--ink);border:1px solid var(--line);font-weight:400;padding:8px 14px;min-height:44px}
+select{font:inherit;padding:8px 10px;min-height:44px}
+label{font-size:.92rem;color:var(--sub)}
+#st{font-weight:700;min-width:11em}
+.meter{width:140px;height:12px;background:#eef1f6;border-radius:6px;overflow:hidden}
+.meter i{display:block;height:100%;width:0;background:#2fa36b}
+canvas{width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:6px;background:#fff}
+.note{font-size:.85rem;color:var(--sub);margin:6px 0 10px}
+#warn,#embed{display:none;padding:8px 12px;border-radius:8px;background:#fff4e0;color:var(--warn);margin:0 0 8px;font-size:.92rem}
+#embed a{color:var(--blue);font-weight:700}
+#ans{font-weight:700;margin-left:10px}
+</style>
+</head>
+<body>
+<h1>波の観測(3秒計測)</h1>
+<p class="steps">① 「計測スタート」を押す → ② 3秒間、音を出す → ③ いちばん大きく振れた波が表示されるので、山の高さ(振幅)を目盛りで読み取ろう</p>
+<div id="embed">埋め込み表示ではマイクが使えないことがあります。使えないときは <a id="openTab" target="_blank" rel="noopener">新しいタブで開く</a></div>
+<div class="bar">
+  <button id="go">● 計測スタート(3秒)</button>
+  <span id="st">待機中</span>
+  <div class="meter" title="マイクに入っている音の大きさ"><i id="lv"></i></div>
+</div>
+<div class="bar">
+  <label>マイク感度 <select id="zoom"></select></label>
+  <label>横の表示時間 <select id="win"></select></label>
+  <span id="unit" class="note" style="margin:0"></span>
+</div>
+<div class="note" style="margin:0 0 8px">マイク感度:波が小さいときは大きく、はみ出すときは小さくします(計測したあとでも変えられます)。</div>
+<div id="warn"></div>
+<canvas id="cv" width="1200" height="560"></canvas>
+<div class="note">3秒間のうち、いちばん振れ幅が大きかった場所が中央にくるように表示しています。</div>
+<canvas id="ov" width="1200" height="110"></canvas>
+<div class="note">↑ 3秒全体のおおまかな様子(赤い線が、上の波を取り出した場所)</div>
+<div id="teacher" style="display:none"><button class="sub" id="chk" disabled>答え合わせ(先生用)</button><span id="ans"></span></div>
+
+<script>
+(()=>{
+const $=id=>document.getElementById(id);
+const cv=$('cv'),g=cv.getContext('2d'),ov=$('ov'),o=ov.getContext('2d');
+const ZOOMS=[1,2,5,10,20,50,100];
+let rec=null;
+
+$('zoom').innerHTML='<option value="0">自動(おすすめ)</option>'+ZOOMS.map(z=>'<option value="'+z+'">×'+z+'</option>').join('');
+$('win').innerHTML=[10,20,40].map(t=>'<option value="'+t+'"'+(t==20?' selected':'')+'>'+t+' ms</option>').join('');
+
+function showEmbed(){$('embed').style.display='block';}
+try{if(window.top!==window.self)showEmbed();}catch(e){showEmbed();}
+$('openTab').href=location.href;
+
+function fail(msg){const w=$('warn');w.textContent=msg;w.style.display='block';showEmbed();}
+
+// 縦の拡大(自動のときは、波がはみ出さない最大の倍率)
+function curZoom(){
+  const z=+$('zoom').value;if(z)return z;
+  let r=ZOOMS[0];
+  if(rec)for(const c of ZOOMS)if(rec.amp*10*c<=9.5)r=c;
+  return r;
+}
+
+// 方眼(目盛り)と波形
+function drawMain(z){
+  const W=cv.width,H=cv.height,L=60,U=12,R=12,B=34,pw=W-L-R,ph=H-U-B,cy=U+ph/2,dy=ph/20,T=+$('win').value;
+  g.fillStyle='#fff';g.fillRect(0,0,W,H);
+  g.font='18px system-ui,sans-serif';
+  g.textAlign='center';g.textBaseline='top';
+  for(let m=0;m<=T;m++){
+    const x=L+m*pw/T,mj=m%5==0;
+    g.strokeStyle=mj?'#9aa6bd':'#dfe4ee';g.lineWidth=mj?1.5:1;
+    g.beginPath();g.moveTo(x,U);g.lineTo(x,U+ph);g.stroke();
+    if(mj){g.fillStyle='#5b6577';g.fillText(m+' ms',x,U+ph+8);}
+  }
+  g.textAlign='right';g.textBaseline='middle';
+  for(let i=-10;i<=10;i++){
+    const y=cy-i*dy,mj=i%5==0;
+    g.strokeStyle=i==0?'#1d2433':mj?'#9aa6bd':'#dfe4ee';g.lineWidth=i==0?2:mj?1.5:1;
+    g.beginPath();g.moveTo(L,y);g.lineTo(L+pw,y);g.stroke();
+    g.fillStyle='#5b6577';g.fillText(Math.abs(i),L-10,y);
+  }
+  // 細かい目盛り(1目盛りを5等分)
+  g.strokeStyle='#5b6577';g.lineWidth=1;g.beginPath();
+  for(let k=-50;k<=50;k++)if(k%5){const y=cy-k*dy/5;g.moveTo(L,y);g.lineTo(L+7,y);}
+  g.stroke();
+  g.save();g.translate(14,cy);g.rotate(-Math.PI/2);g.textAlign='center';g.textBaseline='middle';g.fillStyle='#5b6577';g.fillText('山の高さ(目盛りの数)',0,0);g.restore();
+  if(!rec)return;
+  const {data,sr,dc,pk}=rec,n=Math.max(2,Math.round(T/1000*sr));
+  const s=Math.max(0,Math.min(data.length-n,Math.round(pk-n/2)));
+  g.save();g.beginPath();g.rect(L,U,pw,ph);g.clip();
+  g.strokeStyle='#0b5fff';g.lineWidth=2.5;g.lineJoin='round';g.beginPath();
+  for(let i=0;i<n;i++){const x=L+i*pw/(n-1),y=cy-(data[s+i]-dc)*10*z*dy;i?g.lineTo(x,y):g.moveTo(x,y);}
+  g.stroke();g.restore();
+}
+
+// 3秒全体の様子
+function drawOv(){
+  const W=ov.width,H=ov.height,m=H/2;
+  o.fillStyle='#fff';o.fillRect(0,0,W,H);
+  o.strokeStyle='#dfe4ee';o.lineWidth=1;o.beginPath();o.moveTo(0,m);o.lineTo(W,m);o.stroke();
+  o.fillStyle='#5b6577';o.font='15px system-ui,sans-serif';o.textBaseline='bottom';
+  for(let s=0;s<=3;s++){o.textAlign=s==0?'left':s==3?'right':'center';o.fillText(s+'秒',s/3*W+(s==0?4:s==3?-4:0),H-2);}
+  if(!rec)return;
+  const {data,dc,pk,amp}=rec,bs=data.length/W;
+  o.strokeStyle='#0b5fff';o.beginPath();
+  for(let x=0;x<W;x++){
+    let mx=0;
+    for(let i=Math.floor(x*bs),e=Math.floor((x+1)*bs);i<e;i++){const v=Math.abs(data[i]-dc);if(v>mx)mx=v;}
+    const h=mx/(amp||1)*(m-18);o.moveTo(x+.5,m-h);o.lineTo(x+.5,m+h);
+  }
+  o.stroke();
+  const px=pk/data.length*W;o.strokeStyle='#e03131';o.lineWidth=2;o.beginPath();o.moveTo(px,0);o.lineTo(px,H);o.stroke();
+}
+
+function redraw(){
+  const z=curZoom(),manual=+$('zoom').value;
+  drawMain(z);drawOv();
+  $('ans').textContent='';
+  $('unit').textContent=((rec||manual)?'縦:1目盛り = '+(10/z)+'   ':'')+'横:1目盛り = 1 ms(0.001秒)';
+  let m='';
+  if(rec&&rec.amp>=0.97)m='音が大きすぎて、波の頭が切れています。マイクから離すか音を小さくして、もう一度計測しましょう。';
+  else if(rec&&rec.amp*10*z>10)m='波が目盛りの外にはみ出しています。「マイク感度」を小さくしてください。';
+  else if(rec&&rec.amp<0.002)m='音がほとんど入っていません。マイクに近づけて、もう一度計測してみましょう。';
+  const w=$('warn');w.textContent=m;w.style.display=m?'block':'none';
+}
+
+$('go').onclick=async()=>{
+  const btn=$('go'),st=$('st');
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){fail('このページではマイクを使えません。https:// から始まるページで開いてください。');return;}
+  btn.disabled=true;$('chk').disabled=true;$('warn').style.display='none';
+  let stream=null,ctx=null;
+  try{
+    ctx=new(window.AudioContext||window.webkitAudioContext)();ctx.resume(); // タップ直後に作る(iPad対策)
+    st.textContent='マイクの許可を確認中…';
+    // 音の大きさをそのまま測るため、自動調整はすべてオフ
+    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1}});
+    await ctx.resume();
+    const sr=ctx.sampleRate,need=Math.round(3*sr),chunks=[],t0=ctx.currentTime;let got=0;
+    const src=ctx.createMediaStreamSource(stream),node=ctx.createScriptProcessor(2048,1,1);
+    await new Promise(res=>{
+      node.onaudioprocess=e=>{
+        const d=e.inputBuffer.getChannelData(0);let m=0;
+        for(let i=0;i<d.length;i++){const v=Math.abs(d[i]);if(v>m)m=v;}
+        $('lv').style.width=Math.min(100,m*300)+'%';
+        if(ctx.currentTime-t0<0.5){st.textContent='準備中…';return;} // ボタンを押した音を避ける
+        chunks.push(new Float32Array(d));got+=d.length;
+        st.textContent='計測中… あと '+Math.max(0,3-got/sr).toFixed(1)+' 秒';
+        if(got>=need){node.onaudioprocess=null;res();}
+      };
+      src.connect(node);node.connect(ctx.destination);
+    });
+    node.disconnect();src.disconnect();
+    const all=new Float32Array(got);let p=0;for(const c of chunks){all.set(c,p);p+=c.length;}
+    const d=all.subarray(0,need);let s=0;for(let i=0;i<d.length;i++)s+=d[i];
+    const dc=s/d.length;let pk=0,amp=0;
+    for(let i=0;i<d.length;i++){const v=Math.abs(d[i]-dc);if(v>amp){amp=v;pk=i;}}
+    rec={data:d,sr,dc,pk,amp};
+    $('chk').disabled=false;st.textContent='計測完了';redraw();
+  }catch(e){
+    st.textContent='待機中';
+    fail(e&&e.name==='NotAllowedError'?'マイクが許可されていません。ブラウザのマイク許可を確認するか、「新しいタブで開く」から使ってください。':'マイクを使えませんでした('+((e&&e.name)||'エラー')+')。');
+  }finally{
+    if(stream)stream.getTracks().forEach(t=>t.stop());
+    if(ctx)ctx.close();
+    btn.disabled=false;$('lv').style.width='0';
+  }
+};
+
+$('chk').onclick=()=>{const a=$('ans');a.textContent=a.textContent?'':'最大の振幅 ≈ '+(rec.amp*10*curZoom()).toFixed(1)+' 目盛り';};
+$('zoom').onchange=$('win').onchange=redraw;
+if(location.hash==='#teacher')$('teacher').style.display='block';
+redraw();
+})();
+</script>
+</body>
+</html>
